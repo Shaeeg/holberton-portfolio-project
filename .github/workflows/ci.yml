@@ -1,0 +1,17 @@
+name: Tests and container smoke test
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python -m unittest -v
+      - run: docker build -t support-center .
+      - run: docker run -d --name support-center -p 127.0.0.1:8000:8000 support-center
+      - run: curl --fail --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:8000/health
