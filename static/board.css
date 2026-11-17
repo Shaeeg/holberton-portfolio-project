@@ -85,3 +85,4 @@ dialog::backdrop { background: #142338a0; }
   .sidebar nav { display: flex; flex-wrap: wrap; }
   .brand, .sidebar .connection { margin: 0; }
 }
+.drag-handle { cursor: grab; display: inline-block; padding-inline: .25rem; margin-inline-end: .35rem; color: #365445; user-select: none; }

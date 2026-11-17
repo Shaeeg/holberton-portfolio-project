@@ -313,9 +313,14 @@ function renderTickets() {
     const column = columns.find(element => element.dataset.status === ticket.status);
     const card = document.createElement('article');
     card.id = 'ticket-' + ticket.id;
-    card.draggable = true;
+    const handle = document.createElement('span');
+    handle.className = 'drag-handle';
+    handle.draggable = true;
+    handle.textContent = '⠿';
+    handle.title = 'Kartı başqa sütuna sürüklə';
+    handle.setAttribute('aria-hidden', 'true');
     card.dataset.priority = ticket.priority;
-    card.addEventListener('dragstart', event => {
+    handle.addEventListener('dragstart', event => {
       event.dataTransfer.setData('text/plain', String(ticket.id));
     });
     const number = document.createElement('a');
@@ -509,7 +514,7 @@ function renderTickets() {
         note.readOnly = false;
       }
     });
-    card.append(number, meta);
+    card.append(handle, number, meta);
     if (ticket.received_at) {
       const received = document.createElement('time');
       received.dateTime = ticket.received_at.replace(' ', 'T') + 'Z';
