@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="az">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Çoxkanallı Dəstək Mərkəzi</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,520;9..144,640&family=Outfit:wght@380;460;560&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2314120b'/%3E%3Cpath d='M8 20.5c2.2-4.6 5-7 8-7s5.8 2.4 8 7' fill='none' stroke='%23d6ff4a' stroke-width='2.4' stroke-linecap='round'/%3E%3Ccircle cx='16' cy='11' r='2.2' fill='%23d6ff4a'/%3E%3C/svg%3E" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">
+          <span class="mark" aria-hidden="true"></span>
+          <div>
+            <p class="eyebrow">Holberton · Portfolio</p>
+            <h1>Dəstək mərkəzi</h1>
+          </div>
+        </div>
+        <div class="top-meta">
+          <p class="session-pill" id="session-pill">
+            <span class="dot"></span>
+            Sessiya açıqdır
+          </p>
+          <p class="clock" id="clock">—</p>
+        </div>
+      </header>
+      
+      <div class="shell">
+        <nav class="channels" aria-label="Kanallar">
+          <p class="nav-label">Kanallar</p>
+          <button class="channel is-active" type="button" data-channel="chat">
+            <span class="channel-index">01</span>
+            <span>
+              <strong>Canlı söhbət</strong>
+              <small>Agent cavabı dərhal</small>
+            </span>
+          </button>
+          <button class="channel" type="button" data-channel="email">
+            <span class="channel-index">02</span>
+            <span>
+              <strong>E-poçt</strong>
+              <small>Yazılı müraciət</small>
+            </span>
+          </button>
+          <button class="channel" type="button" data-channel="phone">
+            <span class="channel-index">03</span>
+            <span>
+              <strong>Zəng</strong>
+              <small>Geri zəng sorğusu</small>
+            </span>
+          </button>
+          <div class="nav-note">
+            <p>Söhbət məntiqi <code>bot.py</code> ilə eynidir. <code>exit</code> və ya <code>quit</code> sessiyanı bağlayır.</p>
+          </div>
+        </nav>
+
+        <main class="stage">
+          <section class="panel is-visible" id="panel-chat" data-panel="chat">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">01 · Canlı söhbət</p>
+                <h2>Support Agent</h2>
+              </div>
+              <p class="count" id="message-count">0 mesaj</p>
+            </div>
+            <div class="thread" id="thread" aria-live="polite">
+              <article class="bubble agent">
+                <p class="who">Support Agent</p>
+                <p>Sessiya açıldı. Probleminizi yazın və ya birbaşa sual verin.</p>
+              </article>
+            </div>
+            <form class="composer" id="chat-form">
+              <label class="sr-only" for="chat-input">Mesaj</label>
+              <textarea
+                id="chat-input"
+                rows="2"
+                placeholder="Mesajınızı yazın…"
+                required
+              ></textarea>
+              <button class="send" type="submit">Göndər</button>
+            </form>
+          </section>
+
+          <section class="panel" id="panel-email" data-panel="email" hidden>
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">02 · E-poçt</p>
+                <h2>Yazılı müraciət</h2>
+              </div>
+            </div>
+            <form class="ticket" id="email-form">
+              <label>
+                Ad
+                <input name="name" type="text" required placeholder="Aysel Məmmədova" />
+              </label>
+              <label>
+                E-poçt
+                <input name="email" type="email" required placeholder="aysel@example.com" />
+              </label>
+              <label>
+                Mövzu
+                <input name="subject" type="text" required placeholder="Hesaba giriş" />
+              </label>
+              <label>
+                Mətn
+                <textarea name="body" rows="5" required placeholder="Nə baş verdiyini qısa yazın"></textarea>
+              </label>
+              <button class="send" type="submit">Müraciəti göndər</button>
+              <p class="form-status" id="email-status" role="status"></p>
+            </form>
+          </section>
+
+          <section class="panel" id="panel-phone" data-panel="phone" hidden>
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">03 · Zəng</p>
+                <h2>Geri zəng</h2>
+              </div>
+            </div>
+            <form class="ticket" id="phone-form">
+              <label>
+                Ad
+                <input name="name" type="text" required placeholder="Adınız" />
+              </label>
+              <label>
+                Telefon
+                <input name="phone" type="tel" required placeholder="+994 50 000 00 00" />
+              </label>
+              <label>
+                Uyğun vaxt
+                <select name="slot" required>
+                  <option value="Səhər · 09:00–12:00">Səhər · 09:00–12:00</option>
+                  <option value="Günorta · 12:00–15:00">Günorta · 12:00–15:00</option>
+                  <option value="Axşam · 15:00–18:00">Axşam · 15:00–18:00</option>
+                </select>
+              </label>
+              <label>
+                Qısa qeyd
+                <textarea name="note" rows="4" placeholder="Zəngdə nəyi həll edək?"></textarea>
+              </label>
+              <button class="send" type="submit">Zəng sifariş et</button>
+              <p class="form-status" id="phone-status" role="status"></p>
+            </form>
+          </section>
+        </main>
+
+        <aside class="rail">
+          <section>
+            <p class="nav-label">Sürətli mövzular</p>
+            <div class="chips" id="chips">
+              <button type="button" data-prompt="Sistemə girişdə problem var">Giriş problemi</button>
+              <button type="button" data-prompt="Kömək lazımdır, hesabım bloklanıb">Kömək</button>
+              <button type="button" data-prompt="Ödəniş statusunu yoxlamaq istəyirəm">Ödəniş</button>
+            </div>
+          </section>
+          <section>
+            <p class="nav-label">Bu sessiya</p>
+            <dl class="stats">
+              <div>
+                <dt>Status</dt>
+                <dd id="stat-status">Açıq</dd>
+              </div>
+              <div>
+                <dt>Mesaj</dt>
+                <dd id="stat-messages">0</dd>
+              </div>
+              <div>
+                <dt>Kanal</dt>
+                <dd id="stat-channel">Canlı söhbət</dd>
+              </div>
+            </dl>
+          </section>
+          <section class="log-block">
+            <p class="nav-label">Son müraciətlər</p>
+            <ul class="log" id="request-log">
+              <li class="empty">Hələ e-poçt və ya zəng yoxdur.</li>
+            </ul>
+          </section>
+          <button class="ghost" type="button" id="restart" hidden>Yeni sessiya</button>
+        </aside>
+      </div>
+    </div>
+    <script src="app.js"></script>
+  </body>
+</html>
