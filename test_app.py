@@ -1,4 +1,6 @@
+import sqlite3
 import tempfile
+from contextlib import closing
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -11,7 +13,8 @@ class SupportTest(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        app = create_app(Path(directory.name) / "test.sqlite3")
+        with patch.dict("os.environ", {"OPERATOR_PASSWORD": ""}):
+            app = create_app(Path(directory.name) / "test.sqlite3", local_demo=True)
         app.config.update(TESTING=True, TELEGRAM_SECRET="test-token", INBOUND_SECRET="test-inbound")
         self.client = app.test_client()
 
@@ -211,6 +214,169 @@ class SupportTest(unittest.TestCase):
         for invalid in ("{", "{}", '[["", "Aysel"]]'):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 load_routing_rules(invalid)
+
+    def test_legacy_database_is_migrated_without_losing_tickets(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"OPERATOR_PASSWORD": ""}):
+            database = Path(directory) / "legacy.sqlite3"
+            with closing(sqlite3.connect(database)) as connection, connection:
+                connection.execute("""
+                    CREATE TABLE tickets (
+                        id INTEGER PRIMARY KEY, channel TEXT NOT NULL, external_id TEXT NOT NULL,
+                        body TEXT NOT NULL, status TEXT NOT NULL, agent TEXT, UNIQUE(channel, external_id)
+                    )
+                """)
+                connection.execute("INSERT INTO tickets VALUES (42, 'email', 'first', 'Kömək', 'New', NULL)")
+                connection.execute("CREATE TABLE telegram_ticket_details (ticket_id INTEGER PRIMARY KEY, category TEXT NOT NULL, location TEXT NOT NULL)")
+                connection.execute("INSERT INTO telegram_ticket_details VALUES (42, 'İnternet', 'Bakı')")
+            for _ in range(2):
+                app = create_app(database, local_demo=True)
+                ticket = app.test_client().get("/api/tickets").json[0]
+                self.assertEqual((ticket["id"], ticket["body"], ticket["priority"]), (42, "Kömək", "normal"))
+                self.assertEqual(ticket["technician_progress"], "not_assigned")
+                self.assertIsNone(ticket["service_address"])
+                with closing(sqlite3.connect(database)) as connection:
+                    self.assertEqual(connection.execute(
+                        "SELECT category, location, service_address FROM telegram_ticket_details WHERE ticket_id=42"
+                    ).fetchone(), ("İnternet", "Bakı", None))
+
+    def test_operator_access_is_closed_by_default(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"OPERATOR_PASSWORD": ""}):
+            client = create_app(Path(directory) / "closed.sqlite3").test_client()
+            self.assertEqual(client.get("/").status_code, 503)
+            self.assertEqual(client.get("/api/tickets").status_code, 503)
+            self.assertEqual(client.get("/health").status_code, 200)
+
+    def test_operator_authentication_and_cross_origin_mutations(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            "os.environ", {"OPERATOR_USERNAME": "operator", "OPERATOR_PASSWORD": "test-password"}
+        ):
+            client = create_app(Path(directory) / "protected.sqlite3").test_client()
+            self.assertEqual(client.get("/health").status_code, 200)
+            self.assertEqual(client.get("/api/tickets").status_code, 401)
+            self.assertEqual(client.get("/", auth=("operator", "wrong")).status_code, 401)
+            auth = ("operator", "test-password")
+            self.assertEqual(client.get("/", auth=auth).status_code, 200)
+            self.assertEqual(client.post("/api/tickets", auth=auth, json={"text": "Test"},
+                                         headers={"Sec-Fetch-Site": "cross-site"}).status_code, 403)
+            self.assertEqual(client.post("/api/tickets", auth=auth, json={"text": "Test"}).status_code, 201)
+
+    def test_reply_failure_does_not_block_ticket_intake(self):
+        from urllib.error import URLError
+
+        chat = {"id": 42, "type": "private"}
+        updates = [
+            {"update_id": 1, "message": {"chat": chat, "text": "/menu"}},
+            {"update_id": 2, "message": {"chat": chat, "text": "Kömək"}},
+        ]
+        with patch("demo.telegram_call", side_effect=URLError("offline")):
+            self.assertEqual(forward_updates(self.client, "test-token", updates, None, "test"), 3)
+        self.assertEqual(len(self.client.get("/api/tickets").json), 1)
+
+    def test_guided_telegram_restart_conversation_and_rating(self):
+        from telegram_flow import CATEGORIES, CONFIRM, LOCATIONS, MENU
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            "os.environ", {"OPERATOR_PASSWORD": "", "TELEGRAM_SECRET": "guided"}
+        ):
+            database = Path(directory) / "guided.sqlite3"
+            app = create_app(database, local_demo=True)
+            client = app.test_client()
+
+            def incoming(update_id, text=None, chat_id=42, **payload):
+                if text is not None:
+                    payload["text"] = text
+                return client.post("/webhooks/telegram", json={"update_id": update_id, "message": {
+                    "chat": {"id": chat_id, "type": "private"}, **payload,
+                }}, headers={"X-Telegram-Bot-Api-Secret-Token": "guided"})
+
+            self.assertIn(MENU[0][0], str(incoming(1, "/start").json))
+            incoming(2, MENU[0][0])
+            incoming(3, CATEGORIES[0])
+            incoming(4, LOCATIONS[0])
+            self.assertIn("Modem işləmir", incoming(5, "Modem işləmir").json["text"])
+            self.assertEqual(client.get("/api/tickets").json, [])
+            app = create_app(database, local_demo=True)
+            client = app.test_client()
+            self.assertIn("#1", incoming(6, CONFIRM).json["text"])
+            self.assertNotIn("method", incoming(6, CONFIRM).json)
+            self.assertIn("Kateqoriya", incoming(7, "/status 1").json["text"])
+            self.assertEqual(client.get("/api/tickets").json[0]["agent"], "Bakı")
+            self.assertIn("tapılmadı", incoming(8, "/reply 1", chat_id=43).json["text"])
+            incoming(9, "İkinci sərbəst müraciət")
+            self.assertEqual(len(client.get("/api/tickets").json), 2)
+
+            path = "/api/tickets/1"
+            client.patch(path, json={"status": "In Progress"})
+            client.patch(path, json={"status": "In Progress"})
+            client.post(path + "/notes", json={"text": "Internal only"})
+            self.assertEqual(client.post(path + "/conversation", json={"text": "Yenilik"}).status_code, 201)
+            claim, finish = app.extensions["telegram_claim"], app.extensions["telegram_finish"]
+            notification = claim()
+            self.assertEqual((notification["chat_id"], notification["direction"]), (42, "system"))
+            finish(notification["id"], True)
+            operator = claim()
+            self.assertEqual(operator["direction"], "operator")
+            finish(operator["id"], False)
+            self.assertIsNone(claim())
+            incoming(10, "/reply 1")
+            incoming(11, "Sağ olun")
+            self.assertEqual(incoming(11, "Sağ olun").status_code, 204)
+            incoming(12, "/reply 1")
+            photo = [{"file_id": "photo-example", "file_size": 300}]
+            incoming(13, photo=photo)
+            self.assertEqual(incoming(13, photo=photo).status_code, 204)
+            result = client.get(path + "/conversation").json
+            self.assertEqual([m["delivery"] for m in result["messages"]], ["sent", "failed", "received"])
+            self.assertNotIn("Internal only", str(result))
+            self.assertEqual(len(result["photos"]), 1)
+            photo_id = result["photos"][0]["id"]
+            self.assertEqual(client.get(f"/api/tickets/2/photos/{photo_id}").status_code, 404)
+            app.config["TELEGRAM_BOT_TOKEN"] = "123:test"
+            with patch("app.fetch_photo", return_value=b"jpeg") as fetch:
+                preview = client.get(f"{path}/photos/{photo_id}")
+                self.assertEqual((preview.mimetype, preview.data), ("image/jpeg", b"jpeg"))
+                fetch.assert_called_once_with("123:test", "photo-example")
+            client.patch(path, json={"status": "Resolved"})
+            self.assertIn("/rate 1", claim()["text"])
+            incoming(14, "/rate 1 5", chat_id=43)
+            self.assertIsNone(client.get(path + "/conversation").json["rating"])
+            incoming(15, "/rate 1 5")
+            incoming(16, "/rate 1 2")
+            self.assertEqual(client.get(path + "/conversation").json["rating"], 5)
+
+    def test_guided_service_address_is_optional_and_keeps_city_routing(self):
+        from telegram_flow import ADDRESS, CATEGORIES, CONFIRM, LOCATIONS, MENU
+
+        for chat_id, address in ((42, "Nizami 5 & 7, mənzil #2"), (43, None)):
+            actions = [MENU[0][0], CATEGORIES[0], LOCATIONS[0], "Modem işləmir"]
+            if address:
+                actions.extend((ADDRESS, address))
+            actions.append(CONFIRM)
+            for index, text in enumerate(actions):
+                reply = self.telegram({"update_id": chat_id * 100 + index, "message": {
+                    "chat": {"id": chat_id, "type": "private"}, "text": text,
+                }})
+                self.assertEqual(reply.status_code, 200)
+            self.assertIn("Müraciətiniz qəbul edildi", reply.json["text"])
+            ticket = self.client.get("/api/tickets").json[0]
+            self.assertEqual((ticket["service_address"], ticket["agent"]), (address, "Bakı"))
+
+    def test_technician_progress_is_independent_and_logged_once(self):
+        ticket = self.client.post("/api/tickets", json={"text": "Bakıda internet"}).json
+        path = f"/api/tickets/{ticket['id']}"
+        self.assertEqual(ticket["technician_progress"], "not_assigned")
+        for progress in ("on_the_way", "working", "completed", "completed"):
+            response = self.client.put(path + "/technician-progress", json={"progress": progress})
+            self.assertEqual(response.json["technician_progress"], progress)
+        self.assertEqual(self.client.put(path + "/technician-progress", json={"progress": []}).status_code, 400)
+        self.assertEqual(self.client.put("/api/tickets/999/technician-progress",
+                                        json={"progress": "working"}).status_code, 404)
+        updated = self.client.get("/api/tickets").json[0]
+        self.assertEqual((updated["status"], updated["agent"], updated["technician_progress"]),
+                         ("Assigned", "Bakı", "completed"))
+        events = self.client.get(path + "/events").json
+        self.assertEqual([e["detail"] for e in events if e["kind"] == "technician_progress"],
+                         ["completed", "working", "on_the_way"])
 
     def test_rejects_untrusted_or_invalid_input(self):
         self.assertEqual(self.client.post("/webhooks/telegram", json={}).status_code, 401)
