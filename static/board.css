@@ -1,0 +1,87 @@
+
+  * { box-sizing: border-box; }
+  body { margin: 0 auto; max-width: 1500px; padding: clamp(1rem, 4vw, 4rem); background: #f3f5f2; color: #182820; font: 16px Inter, system-ui, sans-serif; }
+  .board-header { display: flex; flex-wrap: wrap; align-items: baseline; gap: .5rem 1rem; margin-bottom: 1.5rem; }
+  .connection { margin: 0; color: #365445; font-size: .875rem; }
+  .connection[data-state="offline"] { color: #8a2929; }
+  h1 { letter-spacing: -.05em; font-size: clamp(2rem, 5vw, 4rem); margin: 0; }
+  .kanban { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 235px), 1fr)); gap: 1rem; }
+  section { background: #e7ede8; border-radius: 1rem; padding: 1rem; min-height: 14rem; }
+  h2 { font-size: 1rem; margin: 0 0 1rem; }
+  article { background: white; padding: 1rem; margin-bottom: .75rem; border-radius: .75rem; border: 1px solid #d3ded5; overflow-wrap: anywhere; }
+  article[data-priority="urgent"] { border-inline-start: 5px solid #b43a37; }
+  article[data-priority="high"] { border-inline-start: 5px solid #a76b15; }
+  article:target { outline: 3px solid #38694e; outline-offset: 2px; }
+  .aging { display: block; margin-top: .35rem; color: #8a2929; font-size: .8rem; font-weight: 700; }
+  .ticket-number { color: #234d35; font-weight: 700; margin-inline-end: .5rem; }
+  article time { display: block; margin-top: .25rem; color: #365445; font-size: .8rem; }
+  article p { white-space: pre-wrap; }
+  small { color: #365445; }
+  select { width: 100%; padding: .45rem; border: 1px solid #8a9f91; border-radius: .35rem; background: white; color: inherit; font: inherit; }
+  .metrics { display: flex; flex-wrap: wrap; gap: .75rem; margin: 0 0 1.5rem; }
+  .metrics div { background: white; border: 1px solid #d3ded5; border-radius: .75rem; padding: .75rem 1rem; min-width: 8rem; }
+  .metrics dt { color: #365445; }
+  .metrics dd { margin: .25rem 0 0; font-size: 1.5rem; font-weight: 700; }
+  .channel-summary { display: flex; flex-wrap: wrap; gap: .5rem; margin: 0 0 1.5rem; }
+  .channel-summary button[aria-pressed="true"] { background: #dcebe1; border-color: #38694e; }
+  .filters { display: flex; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.5rem; }
+  .filters label { display: grid; gap: .35rem; }
+  .filters input { padding: .45rem; border: 1px solid #8a9f91; border-radius: .35rem; font: inherit; }
+  button { align-self: end; padding: .5rem .75rem; border: 1px solid #8a9f91; border-radius: .35rem; color: inherit; background: white; font: inherit; cursor: pointer; }
+  details { margin-top: .75rem; }
+  summary { cursor: pointer; }
+  article button { margin-top: .5rem; }
+  article form { display: grid; gap: .25rem; margin-top: .75rem; }
+  article input { width: 100%; padding: .45rem; font: inherit; }
+  article form button { justify-self: start; margin-top: 0; }
+  .count { color: #365445; margin-inline-start: .35rem; }
+  .new-ticket { margin-bottom: 1.5rem; }
+  .new-ticket form { display: grid; gap: .5rem; max-width: 36rem; margin-top: .75rem; }
+  textarea { display: block; width: 100%; padding: .5rem; border: 1px solid #8a9f91; border-radius: .35rem; font: inherit; }
+  .new-ticket button { justify-self: start; }
+  .empty { color: #365445; font-size: .9rem; }
+  #feedback { color: #8a2929; }
+
+body {
+  display: grid;
+  grid-template-columns: 12.5rem minmax(0, 1fr);
+  max-width: none;
+  padding: 0;
+  background: #f5f7fa;
+  color: #17263a;
+}
+.sidebar {
+  background: #142338;
+  color: #f5f8ff;
+  min-height: 100vh;
+  padding: 1.5rem 1rem;
+}
+.sidebar a { display: block; color: inherit; padding: .65rem; border-radius: .5rem; text-decoration: none; }
+.sidebar a:hover { background: #263b56; }
+.brand { font-weight: 750; margin-bottom: 1rem; }
+.sidebar .connection { margin: 1.25rem .65rem; color: #bce4ce; }
+.sidebar .connection[data-state="offline"] { color: #ffb5b2; }
+.workspace { padding: clamp(1rem, 3vw, 2.5rem); min-width: 0; }
+.board-header { justify-content: space-between; align-items: center; }
+h1 { font-size: clamp(2rem, 3vw, 3rem); }
+.metrics div { flex: 1 1 8.5rem; border-color: #d9e1ea; }
+.kanban section { background: #e8edf4; border-top: 4px solid #527398; }
+.kanban section[data-status="Assigned"] { border-top-color: #7954a4; }
+.kanban section[data-status="In Progress"] { border-top-color: #a76b15; }
+.kanban section[data-status="Resolved"] { border-top-color: #387659; }
+.filters { background: white; border: 1px solid #d9e1ea; border-radius: .75rem; padding: 1rem; }
+.primary { background: #244f82; color: white; border-color: #244f82; }
+:focus-visible { outline: 3px solid #3974c0; outline-offset: 3px; }
+.skip-link { position: fixed; top: .5rem; left: .5rem; transform: translateY(-180%); background: white; padding: .5rem; z-index: 3; }
+.skip-link:focus { transform: none; }
+dialog.new-ticket { width: min(32rem, calc(100% - 2rem)); margin: auto; border: 1px solid #d9e1ea; border-radius: 1rem; padding: 1.5rem; }
+dialog::backdrop { background: #142338a0; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: .5rem; }
+#create-error { color: #8a2929; }
+#toast { position: fixed; bottom: 1rem; right: 1rem; z-index: 2; background: #142338; color: white; padding: .8rem 1rem; border-radius: .5rem; }
+@media (max-width: 760px) {
+  body { display: block; }
+  .sidebar { min-height: 0; padding: .65rem; }
+  .sidebar nav { display: flex; flex-wrap: wrap; }
+  .brand, .sidebar .connection { margin: 0; }
+}

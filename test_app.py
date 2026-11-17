@@ -1,4 +1,6 @@
+import sqlite3
 import tempfile
+from contextlib import closing
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -11,7 +13,8 @@ class SupportTest(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        app = create_app(Path(directory.name) / "test.sqlite3")
+        with patch.dict("os.environ", {"OPERATOR_PASSWORD": ""}):
+            app = create_app(Path(directory.name) / "test.sqlite3", local_demo=True)
         app.config.update(TESTING=True, TELEGRAM_SECRET="test-token", INBOUND_SECRET="test-inbound")
         self.client = app.test_client()
 
@@ -211,6 +214,55 @@ class SupportTest(unittest.TestCase):
         for invalid in ("{", "{}", '[["", "Aysel"]]'):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 load_routing_rules(invalid)
+
+    def test_legacy_database_is_migrated_without_losing_tickets(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"OPERATOR_PASSWORD": ""}):
+            database = Path(directory) / "legacy.sqlite3"
+            with closing(sqlite3.connect(database)) as connection, connection:
+                connection.execute("""
+                    CREATE TABLE tickets (
+                        id INTEGER PRIMARY KEY, channel TEXT NOT NULL, external_id TEXT NOT NULL,
+                        body TEXT NOT NULL, status TEXT NOT NULL, agent TEXT, UNIQUE(channel, external_id)
+                    )
+                """)
+                connection.execute("INSERT INTO tickets VALUES (42, 'email', 'first', 'Kömək', 'New', NULL)")
+            for _ in range(2):
+                app = create_app(database, local_demo=True)
+                ticket = app.test_client().get("/api/tickets").json[0]
+                self.assertEqual((ticket["id"], ticket["body"], ticket["priority"]), (42, "Kömək", "normal"))
+
+    def test_operator_access_is_closed_by_default(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"OPERATOR_PASSWORD": ""}):
+            client = create_app(Path(directory) / "closed.sqlite3").test_client()
+            self.assertEqual(client.get("/").status_code, 503)
+            self.assertEqual(client.get("/api/tickets").status_code, 503)
+            self.assertEqual(client.get("/health").status_code, 200)
+
+    def test_operator_authentication_and_cross_origin_mutations(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            "os.environ", {"OPERATOR_USERNAME": "operator", "OPERATOR_PASSWORD": "test-password"}
+        ):
+            client = create_app(Path(directory) / "protected.sqlite3").test_client()
+            self.assertEqual(client.get("/health").status_code, 200)
+            self.assertEqual(client.get("/api/tickets").status_code, 401)
+            self.assertEqual(client.get("/", auth=("operator", "wrong")).status_code, 401)
+            auth = ("operator", "test-password")
+            self.assertEqual(client.get("/", auth=auth).status_code, 200)
+            self.assertEqual(client.post("/api/tickets", auth=auth, json={"text": "Test"},
+                                         headers={"Sec-Fetch-Site": "cross-site"}).status_code, 403)
+            self.assertEqual(client.post("/api/tickets", auth=auth, json={"text": "Test"}).status_code, 201)
+
+    def test_reply_failure_does_not_block_ticket_intake(self):
+        from urllib.error import URLError
+
+        chat = {"id": 42, "type": "private"}
+        updates = [
+            {"update_id": 1, "message": {"chat": chat, "text": "/menu"}},
+            {"update_id": 2, "message": {"chat": chat, "text": "Kömək"}},
+        ]
+        with patch("demo.telegram_call", side_effect=URLError("offline")):
+            self.assertEqual(forward_updates(self.client, "test-token", updates, None, "test"), 3)
+        self.assertEqual(len(self.client.get("/api/tickets").json), 1)
 
     def test_rejects_untrusted_or_invalid_input(self):
         self.assertEqual(self.client.post("/webhooks/telegram", json={}).status_code, 401)

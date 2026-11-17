@@ -35,8 +35,15 @@ STATUS_LABELS = {
 }
 
 
+def send_reply(token, payload):
+    try:
+        telegram_call(token, "sendMessage", payload)
+    except (URLError, OSError, ValueError):
+        print("Telegram reply could not be sent.", flush=True)
+
+
 def show_menu(token, chat_id):
-    telegram_call(token, "sendMessage", {
+    send_reply(token, {
         "chat_id": chat_id,
         "text": "Müraciət mövzusunu seçin və ya probleminizi yazın. Son müraciətlər üçün /tickets, ayrıca müraciət üçün /status 123 yazın.",
         "reply_markup": {
@@ -66,7 +73,7 @@ def forward_updates(client, secret, updates, offset, token=None, lookup_status=N
                 tickets = list_tickets(chat["id"])
                 lines = [f"#{ticket['id']} · {STATUS_LABELS[ticket['status']]}" for ticket in tickets]
                 reply = "\n".join(["Son müraciətləriniz", *lines]) if lines else "Müraciət tapılmadı."
-            telegram_call(token, "sendMessage", {"chat_id": chat["id"], "text": reply})
+            send_reply(token, {"chat_id": chat["id"], "text": reply})
             offset = update["update_id"] + 1
             continue
         if token and lookup_status and command.split()[:1] == ["/status"]:
@@ -78,11 +85,11 @@ def forward_updates(client, secret, updates, offset, token=None, lookup_status=N
             elif match:
                 status = lookup_status(int(match[1]), chat["id"])
                 reply = f"Müraciət #{match[1]} · {STATUS_LABELS[status]}" if status else "Müraciət tapılmadı."
-            telegram_call(token, "sendMessage", {"chat_id": chat["id"], "text": reply})
+            send_reply(token, {"chat_id": chat["id"], "text": reply})
             offset = update["update_id"] + 1
             continue
         if token and re.match(r"/[A-Za-z][A-Za-z0-9_]*(?:@[A-Za-z0-9_]+)?(?:\s|$)", command):
-            telegram_call(token, "sendMessage", {
+            send_reply(token, {
                 "chat_id": message["chat"]["id"],
                 "text": "Bu əmr tanınmadı. Mövcud seçimlər üçün /menu yazın.",
             })
@@ -99,13 +106,10 @@ def forward_updates(client, secret, updates, offset, token=None, lookup_status=N
             raise RuntimeError(f"Unexpected local webhook status {response.status_code}")
         chat_id = message.get("chat", {}).get("id") if isinstance(message, dict) else None
         if token and chat_id is not None and response.status_code == 201:
-            try:
-                telegram_call(token, "sendMessage", {
-                    "chat_id": chat_id,
-                    "text": f"Müraciətiniz qəbul edildi. Müraciət nömrəsi: #{response.json['id']}",
-                })
-            except (URLError, OSError, ValueError):
-                print("Ticket saved, but Telegram confirmation could not be sent.", flush=True)
+            send_reply(token, {
+                "chat_id": chat_id,
+                "text": f"Müraciətiniz qəbul edildi. Müraciət nömrəsi: #{response.json['id']}",
+            })
         if response.status_code == 400:
             print("Telegram update skipped because its payload was invalid.", flush=True)
         offset = update["update_id"] + 1
@@ -172,7 +176,7 @@ def main():
             keyring.set_password(service, account, token)
         print(f"Telegram connected: @{bot['username']}", flush=True)
 
-    app = create_app()
+    app = create_app(local_demo=True)
     if token:
         app.config["TELEGRAM_SECRET"] = secrets.token_urlsafe(32)
     server = create_server(app, host="127.0.0.1", port=8000)

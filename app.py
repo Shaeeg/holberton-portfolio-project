@@ -8,6 +8,8 @@ from uuid import uuid4
 
 from flask import Flask, abort, jsonify, render_template, request
 
+from operator_access import protect_operator_routes
+
 PRIORITIES = ("normal", "high", "urgent")
 STATUSES = ("New", "Assigned", "In Progress", "Resolved")
 
@@ -46,7 +48,7 @@ def load_routing_rules(raw):
     return tuple(normalized)
 
 
-def create_app(database=None):
+def create_app(database=None, *, local_demo=False):
     app = Flask(__name__)
     app.config.update(
         DATABASE=database or os.getenv("DATABASE_PATH", "support.sqlite3"),
@@ -56,10 +58,12 @@ def create_app(database=None):
         MAX_CONTENT_LENGTH=256 * 1024,
     )
     app.logger.setLevel(logging.INFO)
+    protect_operator_routes(app, local_demo)
 
     def connect():
         connection = sqlite3.connect(app.config["DATABASE"])
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
         return connection
 
     with closing(connect()) as connection, connection:
