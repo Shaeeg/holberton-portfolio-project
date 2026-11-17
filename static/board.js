@@ -245,6 +245,12 @@ function formatDuration(minutes) {
 }
 
 function updateMetrics(tickets) {
+  const ratings = tickets.map(ticket => ticket.rating).filter(Number.isInteger);
+  document.querySelector('#metric-rating-card').hidden = ratings.length < 3;
+  if (ratings.length >= 3) {
+    const average = ratings.reduce((total, score) => total + score, 0) / ratings.length;
+    document.querySelector('#metric-rating').textContent = average.toLocaleString('az', {maximumFractionDigits: 1}) + '/5';
+  }
   const open = tickets.filter(ticket => ticket.status !== 'Resolved');
   const counts = new Map();
   for (const ticket of open) counts.set(ticket.channel, (counts.get(ticket.channel) ?? 0) + 1);
@@ -533,7 +539,88 @@ function renderTickets() {
       aging.textContent = '24 saatdan çox açıq';
       card.append(aging);
     }
-    card.append(body, select, priorityLabel, assignment, copy, history);
+    if (ticket.can_message) {
+      const conversation = document.createElement('details');
+      const title = document.createElement('summary');
+      title.textContent = 'Telegram söhbəti';
+      const transcript = document.createElement('ol');
+      const photos = document.createElement('div');
+      let photoSnapshot = '';
+      const score = document.createElement('p');
+      const feedback = document.createElement('p');
+      feedback.setAttribute('role', 'status');
+      const form = document.createElement('form');
+      const label = document.createElement('label');
+      label.textContent = 'Müştəriyə görünən cavab';
+      const message = document.createElement('textarea');
+      message.required = true;
+      message.maxLength = 2000;
+      message.rows = 2;
+      label.append(message);
+      const send = document.createElement('button');
+      send.textContent = 'Telegram-a göndər';
+      form.append(label, send);
+      const url = '/api/tickets/' + ticket.id + '/conversation';
+      let timer;
+      const directions = {customer: 'Müştəri', operator: 'Operator', system: 'Bildiriş'};
+      const deliveries = {pending: 'Növbədə', sending: 'Göndərilir', sent: 'Göndərildi',
+                          failed: 'Göndərilmədi', received: 'Qəbul edildi'};
+      async function loadConversation() {
+        clearTimeout(timer);
+        if (!conversation.isConnected || !conversation.open) return;
+        try {
+          const response = await fetch(url);
+          if (!response.ok) throw new Error();
+          const data = await response.json();
+          score.textContent = data.rating === null ? 'Qiymətləndirmə yoxdur' : 'Qiymət · ' + data.rating + '/5';
+          const snapshot = JSON.stringify(data.photos);
+          if (snapshot !== photoSnapshot) {
+            photoSnapshot = snapshot;
+            photos.replaceChildren(...data.photos.map(photo => {
+              const image = document.createElement('img');
+              image.className = 'telegram-photo';
+              image.src = '/api/tickets/' + ticket.id + '/photos/' + photo.id;
+              image.alt = 'Müştərinin göndərdiyi foto';
+              image.loading = 'lazy';
+              image.addEventListener('error', () => image.replaceWith('Foto yüklənmədi.'));
+              return image;
+            }));
+          }
+          transcript.replaceChildren(...data.messages.map(entry => {
+            const item = document.createElement('li');
+            item.textContent = directions[entry.direction] + ' · ' + deliveries[entry.delivery] + ': ' + entry.text;
+            return item;
+          }));
+        } catch {
+          score.textContent = 'Söhbəti yükləmək mümkün olmadı.';
+        } finally {
+          timer = setTimeout(loadConversation, 3000);
+        }
+      }
+      form.addEventListener('submit', async event => {
+        event.preventDefault();
+        if (send.disabled) return;
+        send.disabled = true;
+        try {
+          const response = await fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                            body: JSON.stringify({text: message.value})});
+          if (!response.ok) throw new Error();
+          form.reset();
+          feedback.textContent = 'Mesaj göndərmə növbəsinə əlavə olundu.';
+          await loadConversation();
+        } catch {
+          feedback.textContent = 'Mesajı saxlamaq mümkün olmadı.';
+        } finally {
+          send.disabled = false;
+        }
+      });
+      conversation.append(title, score, transcript, photos, form, feedback);
+      conversation.addEventListener('toggle', loadConversation);
+      card.append(body, select, priorityLabel, assignment, copy, history, conversation);
+    } else {
+      card.append(body, select, priorityLabel, assignment, copy, history);
+    }
+
     column.querySelector('.tickets').append(card);
   }
   for (const column of columns) {

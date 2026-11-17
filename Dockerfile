@@ -2,7 +2,7 @@ FROM python:3.12-slim
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY app.py operator_access.py ./
+COPY app.py operator_access.py telegram_flow.py telegram_media.py demo.py ./
 COPY templates templates
 COPY static static
 RUN useradd --system support && mkdir /data && chown support /data

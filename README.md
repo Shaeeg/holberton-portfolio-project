@@ -101,3 +101,15 @@ docker run --rm -p 127.0.0.1:8000:8000 -e OPERATOR_PASSWORD -v support-data:/dat
 ```
 
 For the presentation, start with an isolated database. After the Telegram intake and routing steps above, change the ticket priority, reassign it, add a note, and inspect the timeline. Check the resulting status in Telegram with `/status <id>`, then export the filtered view. Label the normalized WhatsApp example as simulated intake.
+
+## Interactive Telegram support
+
+1. Start `demo.py --telegram`, then send `/start` in a private chat.
+2. Tap **Yeni müraciət**, select a category and city, describe the issue, and tap **Təsdiqlə**. Note the ticket number and initial status. Free-text submission remains available from the main menu.
+3. Switch the matching card to **İcradadır**. Open **Telegram söhbəti** and send a customer-visible reply. Use the separate **Tarixçə** panel for internal notes.
+4. In Telegram, choose a ticket through **Müraciətlərim** or use `/reply <id>` and send one text message or Telegram photo. Select the ticket again before another reply. The dashboard previews supported JPEG photos up to 5 MiB through its protected API.
+5. Resolve the card, then tap a rating button or send `/rate <id> 5`. The card shows the rating. The overview shows the average once there are three ratings.
+
+SQLite adds tables for drafts, processed guided updates, ticket details, conversations, photos and ratings at startup. Ownership uses the existing private chat association. Ticket changes and queued notifications commit together. The worker records pending, sending, sent and failed states. Telegram rate limits requeue rejected deliveries. Ambiguous failures are left visible for operator review to avoid duplicate messages. A process interrupted mid-send can leave a message in the sending state. Photos are fetched on demand from Telegram. Their provider file identifiers and bot token stay server-side.
+
+For an HTTPS webhook deployment, configure `TELEGRAM_SECRET`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_REPLIES=1`, and operator authentication. Run `python demo.py --delivery-only` alongside the web server with the same `DATABASE_PATH` to process outbound status and conversation messages. The worker and server need shared access to the SQLite file. Use either HTTPS webhook mode or long polling for a bot.

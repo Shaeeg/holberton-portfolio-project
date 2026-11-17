@@ -116,6 +116,26 @@ def forward_updates(client, secret, updates, offset, token=None, lookup_status=N
     return offset
 
 
+def forward_live_updates(client, secret, updates, offset, token):
+    for update in updates:
+        response = client.post("/webhooks/telegram", json=update,
+                               headers={"X-Telegram-Bot-Api-Secret-Token": secret})
+        if response.status_code >= 500:
+            break
+        if response.status_code not in (200, 201, 204, 400):
+            raise RuntimeError(f"Unexpected local webhook status {response.status_code}")
+        payload = response.get_json(silent=True) or {}
+        if payload.get("method") == "sendMessage":
+            send_reply(token, {key: value for key, value in payload.items() if key != "method"})
+        elif response.status_code == 201:
+            chat = update.get("message", {}).get("chat", {})
+            if chat.get("type") == "private":
+                send_reply(token, {"chat_id": chat["id"],
+                           "text": f"Müraciətiniz qəbul edildi. Müraciət nömrəsi: #{payload['id']}"})
+        offset = update["update_id"] + 1
+    return offset
+
+
 def poll_telegram(token, app, stop):
     offset = None
     delay = 1
@@ -126,9 +146,8 @@ def poll_telegram(token, app, stop):
             payload["offset"] = offset
         try:
             updates = telegram_call(token, "getUpdates", payload)
-            offset = forward_updates(
+            offset = forward_live_updates(
                 client, app.config["TELEGRAM_SECRET"], updates, offset, token,
-                app.extensions["telegram_status"], app.extensions["telegram_tickets"],
             )
         except HTTPError as error:
             print(f"Telegram HTTP {error.code}. Retrying in {delay}s.", flush=True)
@@ -144,12 +163,62 @@ def poll_telegram(token, app, stop):
         delay = min(delay * 2, 30)
 
 
+def deliver_messages(token, app, stop):
+    while not stop.is_set():
+        job = app.extensions["telegram_claim"]()
+        if not job:
+            stop.wait(1)
+            continue
+        text = job["text"]
+        if job["direction"] == "operator":
+            text = f"#{job['ticket_id']} · Operator\n{text}\nCavab: /reply {job['ticket_id']}"
+        delivered = False
+        try:
+            payload = {"chat_id": job["chat_id"], "text": text}
+            if job["direction"] == "system" and "/rate " in text:
+                payload["reply_markup"] = {
+                    "keyboard": [[{"text": f"⭐ /rate {job['ticket_id']} {score}"}
+                                  for score in scores] for scores in ((1, 2, 3), (4, 5))],
+                    "resize_keyboard": True, "one_time_keyboard": True,
+                }
+            telegram_call(token, "sendMessage", payload)
+            delivered = True
+        except HTTPError as error:
+            if error.code == 429:
+                try:
+                    throttled = json.loads(error.read(8192))
+                    retry_after = int(throttled.get("parameters", {}).get("retry_after", 2))
+                except (ValueError, TypeError, OSError):
+                    retry_after = 2
+                app.extensions["telegram_finish"](job["id"], None)
+                stop.wait(max(1, retry_after))
+                continue
+            print(f"Queued Telegram message delivery returned HTTP {error.code}.", flush=True)
+        except (URLError, OSError, ValueError):
+            print("Queued Telegram message delivery failed.", flush=True)
+        app.extensions["telegram_finish"](job["id"], delivered)
+        if not delivered:
+            stop.wait(2)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--telegram", action="store_true", help="Connect a live Telegram bot")
     parser.add_argument("--replace-token", action="store_true", help="Replace the saved Telegram token")
+    parser.add_argument("--delivery-only", action="store_true", help="Process outbound messages for webhook mode")
     parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args()
+
+    if args.delivery_only:
+        app = create_app()
+        token = app.config["TELEGRAM_BOT_TOKEN"]
+        if not re.fullmatch(r"[0-9]+:[A-Za-z0-9_-]+", token):
+            parser.exit(1, "Set TELEGRAM_BOT_TOKEN for webhook delivery.\n")
+        try:
+            deliver_messages(token, app, threading.Event())
+        except KeyboardInterrupt:
+            return
+        return
 
     token = None
     if args.telegram:
@@ -179,10 +248,12 @@ def main():
     app = create_app(local_demo=True)
     if token:
         app.config["TELEGRAM_SECRET"] = secrets.token_urlsafe(32)
+        app.config["TELEGRAM_BOT_TOKEN"] = token
     server = create_server(app, host="127.0.0.1", port=8000)
     stop = threading.Event()
     if token:
         threading.Thread(target=poll_telegram, args=(token, app, stop), daemon=True).start()
+        threading.Thread(target=deliver_messages, args=(token, app, stop), daemon=True).start()
     url = "http://127.0.0.1:8000"
     print(f"Kanban: {url}  |  Ctrl+C to stop", flush=True)
     if not args.no_browser:

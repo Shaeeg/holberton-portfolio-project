@@ -6,9 +6,11 @@ import sqlite3
 from contextlib import closing
 from uuid import uuid4
 
-from flask import Flask, abort, jsonify, render_template, request
+from flask import Flask, Response, abort, jsonify, render_template, request
 
 from operator_access import protect_operator_routes
+from telegram_flow import handle_private_text, install_schema, queue_status, receive_photo
+from telegram_media import fetch_photo
 
 PRIORITIES = ("normal", "high", "urgent")
 STATUSES = ("New", "Assigned", "In Progress", "Resolved")
@@ -52,6 +54,8 @@ def create_app(database=None, *, local_demo=False):
     app = Flask(__name__)
     app.config.update(
         DATABASE=database or os.getenv("DATABASE_PATH", "support.sqlite3"),
+        TELEGRAM_WEBHOOK_REPLIES=os.getenv("TELEGRAM_WEBHOOK_REPLIES") == "1",
+        TELEGRAM_BOT_TOKEN=os.getenv("TELEGRAM_BOT_TOKEN", ""),
         TELEGRAM_SECRET=os.getenv("TELEGRAM_SECRET", ""),
         INBOUND_SECRET=os.getenv("INBOUND_SECRET", ""),
         ROUTING_RULES=load_routing_rules(os.getenv("ROUTING_RULES")),
@@ -110,6 +114,8 @@ def create_app(database=None, *, local_demo=False):
             ON telegram_ticket_chats(chat_id, ticket_id)
         """)
 
+        install_schema(connection)
+
     def telegram_tickets(chat_id):
         with closing(connect()) as connection:
             rows = connection.execute(
@@ -165,6 +171,68 @@ def create_app(database=None, *, local_demo=False):
             record_event(connection, ticket_id, "note", text.strip())
         return {"status": "saved"}, 201
 
+    @app.route("/api/tickets/<int:ticket_id>/conversation", methods=["GET", "POST"])
+    def conversation(ticket_id):
+        with closing(connect()) as connection, connection:
+            link = connection.execute(
+                "SELECT 1 FROM telegram_ticket_chats WHERE ticket_id=?", (ticket_id,)
+            ).fetchone()
+            if link is None:
+                abort(404)
+            if request.method == "POST":
+                data = request.get_json(silent=True)
+                text = data.get("text") if isinstance(data, dict) else None
+                if not isinstance(text, str) or not 1 <= len(text.strip()) <= 2000:
+                    return {"error": "Enter between 1 and 2000 characters"}, 400
+                cursor = connection.execute("""INSERT INTO telegram_conversation
+                    (ticket_id,direction,text,delivery) VALUES (?,'operator',?,'pending')""",
+                    (ticket_id, text.strip()))
+                return {"id": cursor.lastrowid, "delivery": "pending"}, 201
+            messages = connection.execute("""SELECT direction,text,delivery,recorded_at
+                FROM telegram_conversation WHERE ticket_id=? ORDER BY id""", (ticket_id,))
+            rating = connection.execute("SELECT score FROM telegram_ratings WHERE ticket_id=?",
+                                        (ticket_id,)).fetchone()
+            photos = connection.execute("SELECT id, recorded_at FROM telegram_photos WHERE ticket_id=? ORDER BY id",
+                                        (ticket_id,))
+            return {"messages": [dict(message) for message in messages],
+                    "photos": [dict(photo) for photo in photos],
+                    "rating": rating["score"] if rating else None}
+
+    @app.get("/api/tickets/<int:ticket_id>/photos/<int:photo_id>")
+    def telegram_photo(ticket_id, photo_id):
+        with closing(connect()) as connection:
+            row = connection.execute("SELECT file_id FROM telegram_photos WHERE id=? AND ticket_id=?",
+                                     (photo_id, ticket_id)).fetchone()
+        if row is None:
+            abort(404)
+        token = app.config["TELEGRAM_BOT_TOKEN"]
+        if not token:
+            return {"error": "Telegram media is unavailable"}, 503
+        try:
+            image = fetch_photo(token, row["file_id"])
+        except (OSError, ValueError):
+            return {"error": "Telegram photo could not be downloaded"}, 502
+        return Response(image, mimetype="image/jpeg")
+
+    def claim_telegram_message():
+        with closing(connect()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            job = connection.execute("""SELECT m.id, m.ticket_id, m.direction, m.text, c.chat_id
+                FROM telegram_conversation m JOIN telegram_ticket_chats c ON c.ticket_id=m.ticket_id
+                WHERE m.delivery='pending' ORDER BY m.id LIMIT 1""").fetchone()
+            if job:
+                connection.execute("UPDATE telegram_conversation SET delivery='sending' WHERE id=?",
+                                   (job["id"],))
+            return dict(job) if job else None
+
+    def finish_telegram_message(message_id, delivered):
+        with closing(connect()) as connection, connection:
+            connection.execute("UPDATE telegram_conversation SET delivery=? WHERE id=? AND delivery='sending'",
+                               ("pending" if delivered is None else ("sent" if delivered else "failed"), message_id))
+
+    app.extensions["telegram_claim"] = claim_telegram_message
+    app.extensions["telegram_finish"] = finish_telegram_message
+
     @app.get("/")
     def board():
         return render_template("board.html", statuses=STATUSES)
@@ -179,7 +247,9 @@ def create_app(database=None, *, local_demo=False):
     def tickets():
         with closing(connect()) as connection:
             response = jsonify([dict(row) for row in connection.execute(
-                """SELECT tickets.*, (
+                """SELECT tickets.*, EXISTS(SELECT 1 FROM telegram_ticket_chats
+                       WHERE ticket_id=tickets.id) AS can_message,
+                   (SELECT score FROM telegram_ratings WHERE ticket_id=tickets.id) AS rating, (
                        SELECT recorded_at FROM ticket_events
                        WHERE ticket_id = tickets.id AND kind = 'received'
                        ORDER BY id LIMIT 1
@@ -209,6 +279,7 @@ def create_app(database=None, *, local_demo=False):
             )
             if cursor.rowcount:
                 record_event(connection, ticket_id, "status", status)
+                queue_status(connection, ticket_id, status)
             elif connection.execute("SELECT 1 FROM tickets WHERE id = ?", (ticket_id,)).fetchone() is None:
                 abort(404)
         return {"id": ticket_id, "status": status}
@@ -259,6 +330,7 @@ def create_app(database=None, *, local_demo=False):
                 record_event(connection, ticket_id, "assignment", ticket["agent"])
             if previous["status"] != ticket["status"]:
                 record_event(connection, ticket_id, "status", ticket["status"])
+                queue_status(connection, ticket_id, ticket["status"])
         return jsonify(dict(ticket))
 
     @app.post("/api/tickets")
@@ -269,36 +341,40 @@ def create_app(database=None, *, local_demo=False):
             return {"error": "Enter between 1 and 4000 characters"}, 400
         return store_ticket("manual", uuid4().hex, body)
 
-    def store_ticket(channel, external_id, body, chat_id=None):
+    def insert_ticket(connection, channel, external_id, body, chat_id=None):
         normalized = normalize_text(body)
         agent = next(
             (team for keyword, team in app.config["ROUTING_RULES"] if keyword in normalized),
             None,
         )
-        with closing(connect()) as connection, connection:
-            cursor = connection.execute(
-                """INSERT INTO tickets (channel, external_id, body, status, agent)
-                   VALUES (?, ?, ?, ?, ?)
-                   ON CONFLICT(channel, external_id) DO NOTHING""",
-                (channel, str(external_id), body.strip(), "Assigned" if agent else "New", agent),
+        cursor = connection.execute(
+            """INSERT INTO tickets (channel, external_id, body, status, agent)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(channel, external_id) DO NOTHING""",
+            (channel, str(external_id), body.strip(), "Assigned" if agent else "New", agent),
+        )
+        created = cursor.rowcount == 1
+        ticket = connection.execute(
+            "SELECT * FROM tickets WHERE channel = ? AND external_id = ?",
+            (channel, str(external_id)),
+        ).fetchone()
+        if created and chat_id is not None:
+            connection.execute(
+                "INSERT INTO telegram_ticket_chats (ticket_id, chat_id) VALUES (?, ?)",
+                (ticket["id"], chat_id),
             )
-            created = cursor.rowcount == 1
-            ticket = connection.execute(
-                "SELECT * FROM tickets WHERE channel = ? AND external_id = ?",
-                (channel, str(external_id)),
-            ).fetchone()
-            if created and chat_id is not None:
-                connection.execute(
-                    "INSERT INTO telegram_ticket_chats (ticket_id, chat_id) VALUES (?, ?)",
-                    (ticket["id"], chat_id),
-                )
-            if created:
-                record_event(connection, ticket["id"], "received", channel)
-                if agent:
-                    record_event(connection, ticket["id"], "assignment", agent)
+        if created:
+            record_event(connection, ticket["id"], "received", channel)
+            if agent:
+                record_event(connection, ticket["id"], "assignment", agent)
         if created:
             app.logger.info("Ticket %s received via %s, assigned to %s", ticket["id"], channel, agent)
-        return jsonify(dict(ticket)), 201 if created else 200
+        return dict(ticket), created
+
+    def store_ticket(channel, external_id, body, chat_id=None):
+        with closing(connect()) as connection, connection:
+            ticket, created = insert_ticket(connection, channel, external_id, body, chat_id)
+        return jsonify(ticket), 201 if created else 200
 
     @app.post("/webhooks/<channel>")
     def webhook(channel):
@@ -324,11 +400,17 @@ def create_app(database=None, *, local_demo=False):
                 return {"error": "Expected an integer update_id"}, 400
             message = data.get("message")
             body = message.get("text") if isinstance(message, dict) else None
-            if body is None:
-                return "", 204
-            chat = message.get("chat")
+            chat = message.get("chat") if isinstance(message, dict) else None
             if isinstance(chat, dict) and type(chat.get("id")) is int and chat.get("type") == "private":
                 chat_id = chat["id"]
+            if body is None:
+                photos = message.get("photo") if isinstance(message, dict) else None
+                if chat_id is None or not isinstance(photos, list) or not photos:
+                    return "", 204
+                with closing(connect()) as connection, connection:
+                    connection.execute("BEGIN IMMEDIATE")
+                    reply = receive_photo(connection, external_id, chat_id, photos)
+                    return jsonify(method="sendMessage", **reply) if reply else ("", 204)
         else:
             external_id = data.get("id")
             body = data.get("text")
@@ -340,6 +422,28 @@ def create_app(database=None, *, local_demo=False):
             or not body.strip()
         ):
             return {"error": "Expected a valid message ID and non-empty text"}, 400
+
+        if chat_id is not None:
+            with closing(connect()) as connection, connection:
+                connection.execute("BEGIN IMMEDIATE")
+                existing = connection.execute(
+                    "SELECT * FROM tickets WHERE channel='telegram' AND external_id=?",
+                    (str(external_id),),
+                ).fetchone()
+                if existing is not None:
+                    return jsonify(dict(existing)), 200
+                reply = handle_private_text(connection, external_id, chat_id, body, insert_ticket)
+                if reply is not None:
+                    if not reply:
+                        return "", 204
+                    return jsonify(method="sendMessage", **reply)
+                ticket, created = insert_ticket(connection, channel, external_id, body, chat_id)
+                if app.config.get("TELEGRAM_WEBHOOK_REPLIES"):
+                    return jsonify(
+                        method="sendMessage", chat_id=chat_id,
+                        text=f"Müraciətiniz qəbul edildi. Müraciət nömrəsi: #{ticket['id']}",
+                    )
+                return jsonify(ticket), 201 if created else 200
 
         return store_ticket(channel, external_id, body, chat_id)
 
