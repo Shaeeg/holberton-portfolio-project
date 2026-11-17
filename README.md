@@ -113,3 +113,11 @@ For the presentation, start with an isolated database. After the Telegram intake
 SQLite adds tables for drafts, processed guided updates, ticket details, conversations, photos and ratings at startup. Ownership uses the existing private chat association. Ticket changes and queued notifications commit together. The worker records pending, sending, sent and failed states. Telegram rate limits requeue rejected deliveries. Ambiguous failures are left visible for operator review to avoid duplicate messages. A process interrupted mid-send can leave a message in the sending state. Photos are fetched on demand from Telegram. Their provider file identifiers and bot token stay server-side.
 
 For an HTTPS webhook deployment, configure `TELEGRAM_SECRET`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_REPLIES=1`, and operator authentication. Run `python demo.py --delivery-only` alongside the web server with the same `DATABASE_PATH` to process outbound status and conversation messages. The worker and server need shared access to the SQLite file. Use either HTTPS webhook mode or long polling for a bot.
+
+## Field service demo
+
+In the Telegram review screen, select **Xidmət ünvanı əlavə et**, enter a street address and confirm the request. Confirm directly to skip the address. City and service rules continue to determine assignment.
+
+Open **Sahə xidməti** on the ticket card to view the address, open it in Google Maps, and update **Texnikin iş mərhələsi**. The operator can change this independently of the ticket status and agent assignment. Progress changes appear under **Tarixçə**.
+
+Open cards show a demo waiting-time badge calculated from the stored receipt timestamp. Green is under 120 minutes, yellow is 120–240 minutes, and red is above 240 minutes. Cards missing a receipt timestamp show **Vaxt məlum deyil**. Configure the thresholds with `DEMO_AGE_YELLOW_MINUTES` and `DEMO_AGE_RED_MINUTES` before starting the server. These are demo indicators with no contractual SLA guarantee.

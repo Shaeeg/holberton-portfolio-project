@@ -88,3 +88,11 @@ dialog::backdrop { background: #142338a0; }
 .drag-handle { cursor: grab; display: inline-block; padding-inline: .25rem; margin-inline-end: .35rem; color: #365445; user-select: none; }
 
 .telegram-photo { display: block; max-width: 100%; max-height: 14rem; margin-block: .5rem; object-fit: contain; }
+
+.demo-age-legend { font-size: .875rem; color: #365445; }
+.demo-age-badge { display: inline-block; margin-top: .35rem; padding: .15rem .45rem; border-radius: .35rem; background: #edf0f5; color: #34435a; }
+.demo-age-badge[data-band="green"] { background: #dff0e4; color: #214b33; }
+.demo-age-badge[data-band="yellow"] { background: #fff0bf; color: #604400; }
+.demo-age-badge[data-band="red"] { background: #fbe1e0; color: #802e2f; }
+.service-address { margin-bottom: .5rem; overflow-wrap: anywhere; }
+.technician-control { display: grid; gap: .35rem; margin-block: .65rem; }

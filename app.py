@@ -12,6 +12,17 @@ from operator_access import protect_operator_routes
 from telegram_flow import handle_private_text, install_schema, queue_status, receive_photo
 from telegram_media import fetch_photo
 
+TECHNICIAN_PROGRESS = ("not_assigned", "on_the_way", "working", "completed")
+
+
+def demo_age_thresholds():
+    yellow = int(os.getenv("DEMO_AGE_YELLOW_MINUTES", "120"))
+    red = int(os.getenv("DEMO_AGE_RED_MINUTES", "240"))
+    if not 0 < yellow < red:
+        raise ValueError("Demo age thresholds must be positive and increasing")
+    return yellow, red
+
+
 PRIORITIES = ("normal", "high", "urgent")
 STATUSES = ("New", "Assigned", "In Progress", "Resolved")
 
@@ -59,6 +70,7 @@ def create_app(database=None, *, local_demo=False):
         TELEGRAM_SECRET=os.getenv("TELEGRAM_SECRET", ""),
         INBOUND_SECRET=os.getenv("INBOUND_SECRET", ""),
         ROUTING_RULES=load_routing_rules(os.getenv("ROUTING_RULES")),
+        DEMO_AGE_THRESHOLDS=demo_age_thresholds(),
         MAX_CONTENT_LENGTH=256 * 1024,
     )
     app.logger.setLevel(logging.INFO)
@@ -87,6 +99,10 @@ def create_app(database=None, *, local_demo=False):
         columns = {column["name"] for column in connection.execute("PRAGMA table_info(tickets)")}
         if "priority" not in columns:
             connection.execute("ALTER TABLE tickets ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'")
+
+        if "technician_progress" not in columns:
+            connection.execute("""ALTER TABLE tickets ADD COLUMN technician_progress TEXT
+                NOT NULL DEFAULT 'not_assigned'""")
 
         connection.execute("""
             CREATE TABLE IF NOT EXISTS ticket_events (
@@ -235,7 +251,7 @@ def create_app(database=None, *, local_demo=False):
 
     @app.get("/")
     def board():
-        return render_template("board.html", statuses=STATUSES)
+        return render_template("board.html", statuses=STATUSES, age_thresholds=app.config["DEMO_AGE_THRESHOLDS"])
 
     @app.get("/health")
     def health():
@@ -249,6 +265,8 @@ def create_app(database=None, *, local_demo=False):
             response = jsonify([dict(row) for row in connection.execute(
                 """SELECT tickets.*, EXISTS(SELECT 1 FROM telegram_ticket_chats
                        WHERE ticket_id=tickets.id) AS can_message,
+                   (SELECT service_address FROM telegram_ticket_details
+                    WHERE ticket_id=tickets.id) AS service_address,
                    (SELECT score FROM telegram_ratings WHERE ticket_id=tickets.id) AS rating, (
                        SELECT recorded_at FROM ticket_events
                        WHERE ticket_id = tickets.id AND kind = 'received'
@@ -283,6 +301,21 @@ def create_app(database=None, *, local_demo=False):
             elif connection.execute("SELECT 1 FROM tickets WHERE id = ?", (ticket_id,)).fetchone() is None:
                 abort(404)
         return {"id": ticket_id, "status": status}
+
+    @app.put("/api/tickets/<int:ticket_id>/technician-progress")
+    def update_technician_progress(ticket_id):
+        data = request.get_json(silent=True)
+        progress = data.get("progress") if isinstance(data, dict) else None
+        if progress not in TECHNICIAN_PROGRESS:
+            return {"error": "Invalid technician progress"}, 400
+        with closing(connect()) as connection, connection:
+            changed = connection.execute("""UPDATE tickets SET technician_progress=?
+                WHERE id=? AND technician_progress<>?""", (progress, ticket_id, progress)).rowcount
+            if changed:
+                record_event(connection, ticket_id, "technician_progress", progress)
+            elif connection.execute("SELECT 1 FROM tickets WHERE id=?", (ticket_id,)).fetchone() is None:
+                abort(404)
+        return {"id": ticket_id, "technician_progress": progress}
 
     @app.put("/api/tickets/<int:ticket_id>/priority")
     def set_priority(ticket_id):

@@ -46,6 +46,9 @@
   </form>
 </dialog>
 <h2 id="kanban" tabindex="-1">Kanban lövhəsi</h2>
+<p class="demo-age-legend" id="demo-age" data-yellow="{{ age_thresholds[0] }}" data-red="{{ age_thresholds[1] }}">
+  Demo gözləmə göstəricisi (açıq müraciətlər) · Yaşıl: {{ age_thresholds[0] }} dəq-dən az · Sarı: {{ age_thresholds[0] }}–{{ age_thresholds[1] }} dəq · Qırmızı: {{ age_thresholds[1] }} dəq-dən çox. Müqavilə üzrə SLA deyil.
+</p>
 <div class="filters">
   <label>Müraciət axtar <input id="search" type="search" placeholder="Mətn, agent və ya #nömrə"></label>
   <label>Kanal

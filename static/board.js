@@ -76,6 +76,12 @@ for (const [value, name] of Object.entries(channelNames)) {
 }
 let previous = '';
 let currentTickets = [];
+const openFieldDetails = new Set();
+const technicianLabels = {
+  not_assigned: 'Təyin edilməyib', on_the_way: 'Yoldadır',
+  working: 'İş başındadır', completed: 'Tamamlanıb'
+};
+const ageThresholds = document.querySelector('#demo-age').dataset;
 const openHistories = new Set();
 const noteDrafts = new Map();
 const assignmentDrafts = new Map();
@@ -190,7 +196,7 @@ async function refresh() {
     if (pending || document.activeElement?.matches('article input, article textarea')
         || document.querySelector('article details form button:disabled')) return;
     updateMetrics(tickets);
-    const snapshot = JSON.stringify(tickets.map(ticket => [ticket, isAging(ticket)]));
+    const snapshot = JSON.stringify(tickets.map(ticket => [ticket, isAging(ticket), demoAgeBand(ticket, Date.now(), ageThresholds)]));
     if (snapshot === previous) return;
     previous = snapshot;
     const firstLoad = currentTickets.length === 0;
@@ -204,6 +210,16 @@ async function refresh() {
     pollDelay = Math.min(pollDelay * 2, 15000);
   }
 }
+function demoAgeBand(ticket, now, thresholds) {
+  if (ticket.status === 'Resolved') return null;
+  if (!ticket.received_at) return 'unknown';
+  const received = Date.parse(ticket.received_at.replace(' ', 'T') + 'Z');
+  const minutes = (now - received) / 60000;
+  if (!Number.isFinite(minutes) || minutes < 0) return 'unknown';
+  if (minutes < Number(thresholds.yellow)) return 'green';
+  return minutes <= Number(thresholds.red) ? 'yellow' : 'red';
+}
+
 function isAging(ticket) {
   if (ticket.status === 'Resolved' || !ticket.received_at) return false;
   const received = Date.parse(ticket.received_at.replace(' ', 'T') + 'Z');
@@ -470,6 +486,7 @@ function renderTickets() {
           const status = columns.find(target => target.dataset.status === event.detail);
           const label = {
             received: 'Qəbul edildi · ' + channelNames[event.detail],
+            technician_progress: 'Texnik · ' + technicianLabels[event.detail],
             assignment: event.detail ? 'Təyinat · ' + event.detail : 'Təyinat silindi',
             note: 'Qeyd · ' + event.detail,
             priority: 'Prioritet · ' + priorityNames[event.detail],
@@ -539,6 +556,74 @@ function renderTickets() {
       aging.textContent = '24 saatdan çox açıq';
       card.append(aging);
     }
+    const band = demoAgeBand(ticket, Date.now(), ageThresholds);
+    if (band) {
+      const badge = document.createElement('small');
+      badge.className = 'demo-age-badge';
+      badge.dataset.band = band;
+      badge.textContent = 'Demo gözləmə · ' + {
+        green: 'Yaşıl', yellow: 'Sarı', red: 'Qırmızı', unknown: 'Vaxt məlum deyil'
+      }[band];
+      card.append(badge);
+    }
+
+    const fieldDetails = document.createElement('details');
+    const fieldTitle = document.createElement('summary');
+    fieldTitle.textContent = 'Sahə xidməti';
+    fieldDetails.append(fieldTitle);
+    fieldDetails.open = openFieldDetails.has(ticket.id);
+    fieldDetails.addEventListener('toggle', () => {
+      if (!fieldDetails.isConnected) return;
+      if (fieldDetails.open) openFieldDetails.add(ticket.id);
+      else openFieldDetails.delete(ticket.id);
+    });
+    const address = document.createElement('p');
+    address.className = 'service-address';
+    address.textContent = ticket.service_address
+      ? 'Xidmət ünvanı: ' + ticket.service_address : 'Xidmət ünvanı göstərilməyib.';
+    fieldDetails.append(address);
+    if (ticket.service_address) {
+      const maps = document.createElement('a');
+      maps.textContent = 'Google Maps-də aç';
+      const url = new URL('https://www.google.com/maps/search/');
+      url.search = new URLSearchParams({api: '1', query: ticket.service_address});
+      maps.href = url;
+      maps.target = '_blank';
+      maps.rel = 'noopener noreferrer';
+      fieldDetails.append(maps);
+    }
+    const technicianLabel = document.createElement('label');
+    technicianLabel.className = 'technician-control';
+    technicianLabel.textContent = 'Texnikin iş mərhələsi';
+    const technicianSelect = document.createElement('select');
+    for (const [value, name] of Object.entries(technicianLabels)) {
+      technicianSelect.add(new Option(name, value));
+    }
+    technicianSelect.value = ticket.technician_progress;
+    technicianLabel.append(technicianSelect);
+    fieldDetails.append(technicianLabel);
+    technicianSelect.addEventListener('change', async () => {
+      const progress = technicianSelect.value;
+      technicianSelect.value = ticket.technician_progress;
+      if (pending) return;
+      pending = true;
+      technicianSelect.disabled = true;
+      try {
+        const response = await fetch('/api/tickets/' + ticket.id + '/technician-progress', {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({progress})
+        });
+        if (!response.ok) throw new Error();
+      } catch {
+        showError('Texnikin iş mərhələsini saxlamaq mümkün olmadı.');
+        return;
+      } finally {
+        pending = false;
+        technicianSelect.disabled = false;
+      }
+      await refresh();
+    });
     if (ticket.can_message) {
       const conversation = document.createElement('details');
       const title = document.createElement('summary');
@@ -616,9 +701,9 @@ function renderTickets() {
       });
       conversation.append(title, score, transcript, photos, form, feedback);
       conversation.addEventListener('toggle', loadConversation);
-      card.append(body, select, priorityLabel, assignment, copy, history, conversation);
+      card.append(body, select, priorityLabel, assignment, copy, fieldDetails, history, conversation);
     } else {
-      card.append(body, select, priorityLabel, assignment, copy, history);
+      card.append(body, select, priorityLabel, assignment, copy, fieldDetails, history);
     }
 
     column.querySelector('.tickets').append(card);

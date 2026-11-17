@@ -12,6 +12,7 @@ LOCATIONS = ("📍 Bakı", "📍 Sumqayıt", "📍 Gəncə", "📍 Digər")
 PHOTO_LIMIT = 5 * 1024 * 1024
 CONFIRM = "✅ Təsdiqlə"
 EDIT = "✏️ Düzəliş et"
+ADDRESS = "📍 Xidmət ünvanı əlavə et"
 CANCEL = "❌ Ləğv et"
 LABELS = {"New": "Yeni", "Assigned": "Təyin edilib",
           "In Progress": "İcradadır", "Resolved": "Həll edilib"}
@@ -29,6 +30,9 @@ def install_schema(db):
         category TEXT NOT NULL, location TEXT NOT NULL
     )""")
 
+    columns = {row["name"] for row in db.execute("PRAGMA table_info(telegram_ticket_details)")}
+    if "service_address" not in columns:
+        db.execute("ALTER TABLE telegram_ticket_details ADD COLUMN service_address TEXT")
     db.execute("""CREATE TABLE IF NOT EXISTS telegram_conversation (
         id INTEGER PRIMARY KEY, ticket_id INTEGER NOT NULL REFERENCES tickets(id),
         direction TEXT NOT NULL, text TEXT NOT NULL, delivery TEXT NOT NULL,
@@ -183,6 +187,17 @@ def handle_private_text(db, update_id, chat_id, text, create_ticket):
     if re.match(r"/[A-Za-z]", text):
         return reply("Bu əmr tanınmadı. Mövcud seçimlər üçün /menu yazın.")
 
+    def summary():
+        address = draft.get("service_address") or "Göstərilməyib"
+        return reply(f"Kateqoriya: {draft['category']}\nMəkan: {draft['location']}\n"
+                     f"Xidmət ünvanı: {address}\nTəsvir: {draft['description']}",
+                     ((CONFIRM, EDIT), (ADDRESS,), (CANCEL,)))
+
+    if step == "address":
+        if not 1 <= len(text) <= 250 or text in (CONFIRM, EDIT, ADDRESS):
+            return reply("Xidmət ünvanını 1–250 simvolla yazın və ya ləğv edin.", ((CANCEL,),))
+        draft.update(step="confirm", service_address=text)
+        return summary()
     if step == "category":
         if text not in CATEGORIES:
             return reply("Kateqoriyanı düymələrdən seçin.", (CATEGORIES[:2], CATEGORIES[2:], (CANCEL,)))
@@ -199,23 +214,26 @@ def handle_private_text(db, update_id, chat_id, text, create_ticket):
         if not 1 <= len(text) <= 2000:
             return reply("Təsvir 1–2000 simvol olmalıdır.", ((CANCEL,),))
         draft.update(step="confirm", description=text)
-        return reply(f"Kateqoriya: {draft['category']}\nMəkan: {draft['location']}\n"
-                     f"Təsvir: {text}", ((CONFIRM, EDIT), (CANCEL,)))
+        return summary()
     if step == "confirm":
+        if text == ADDRESS:
+            draft["step"] = "address"
+            return reply("Küçə, bina və varsa mənzil nömrəsini yazın.", ((CANCEL,),))
         if text == EDIT:
             draft.clear()
             draft["step"] = "category"
             return reply("Kateqoriyanı yenidən seçin.", (CATEGORIES[:2], CATEGORIES[2:], (CANCEL,)))
         if text != CONFIRM:
-            return reply("Müraciəti təsdiqləyin və ya düzəliş edin.", ((CONFIRM, EDIT), (CANCEL,)))
+            return summary()
         category, location = draft["category"], draft["location"]
         body = f"{category} · {location}\n{draft['description']}"
         ticket = create_ticket(db, "telegram", update_id, body, chat_id)[0]
-        db.execute("INSERT OR IGNORE INTO telegram_ticket_details VALUES (?, ?, ?)",
-                   (ticket["id"], category, location))
+        db.execute("""INSERT OR IGNORE INTO telegram_ticket_details
+                   (ticket_id, category, location, service_address) VALUES (?, ?, ?, ?)""",
+                   (ticket["id"], category, location, draft.get("service_address")))
         draft.clear()
         return reply(f"Müraciətiniz qəbul edildi. Müraciət nömrəsi: #{ticket['id']}\n"
                      f"Vəziyyət: {LABELS[ticket['status']]}")
-    if text in (*CATEGORIES, *LOCATIONS, CONFIRM, EDIT):
+    if text in (*CATEGORIES, *LOCATIONS, CONFIRM, EDIT, ADDRESS):
         return reply("Başlamaq üçün Yeni müraciət düyməsini seçin.")
     return None

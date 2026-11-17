@@ -226,10 +226,18 @@ class SupportTest(unittest.TestCase):
                     )
                 """)
                 connection.execute("INSERT INTO tickets VALUES (42, 'email', 'first', 'Kömək', 'New', NULL)")
+                connection.execute("CREATE TABLE telegram_ticket_details (ticket_id INTEGER PRIMARY KEY, category TEXT NOT NULL, location TEXT NOT NULL)")
+                connection.execute("INSERT INTO telegram_ticket_details VALUES (42, 'İnternet', 'Bakı')")
             for _ in range(2):
                 app = create_app(database, local_demo=True)
                 ticket = app.test_client().get("/api/tickets").json[0]
                 self.assertEqual((ticket["id"], ticket["body"], ticket["priority"]), (42, "Kömək", "normal"))
+                self.assertEqual(ticket["technician_progress"], "not_assigned")
+                self.assertIsNone(ticket["service_address"])
+                with closing(sqlite3.connect(database)) as connection:
+                    self.assertEqual(connection.execute(
+                        "SELECT category, location, service_address FROM telegram_ticket_details WHERE ticket_id=42"
+                    ).fetchone(), ("İnternet", "Bakı", None))
 
     def test_operator_access_is_closed_by_default(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"OPERATOR_PASSWORD": ""}):
@@ -335,6 +343,40 @@ class SupportTest(unittest.TestCase):
             incoming(15, "/rate 1 5")
             incoming(16, "/rate 1 2")
             self.assertEqual(client.get(path + "/conversation").json["rating"], 5)
+
+    def test_guided_service_address_is_optional_and_keeps_city_routing(self):
+        from telegram_flow import ADDRESS, CATEGORIES, CONFIRM, LOCATIONS, MENU
+
+        for chat_id, address in ((42, "Nizami 5 & 7, mənzil #2"), (43, None)):
+            actions = [MENU[0][0], CATEGORIES[0], LOCATIONS[0], "Modem işləmir"]
+            if address:
+                actions.extend((ADDRESS, address))
+            actions.append(CONFIRM)
+            for index, text in enumerate(actions):
+                reply = self.telegram({"update_id": chat_id * 100 + index, "message": {
+                    "chat": {"id": chat_id, "type": "private"}, "text": text,
+                }})
+                self.assertEqual(reply.status_code, 200)
+            self.assertIn("Müraciətiniz qəbul edildi", reply.json["text"])
+            ticket = self.client.get("/api/tickets").json[0]
+            self.assertEqual((ticket["service_address"], ticket["agent"]), (address, "Bakı"))
+
+    def test_technician_progress_is_independent_and_logged_once(self):
+        ticket = self.client.post("/api/tickets", json={"text": "Bakıda internet"}).json
+        path = f"/api/tickets/{ticket['id']}"
+        self.assertEqual(ticket["technician_progress"], "not_assigned")
+        for progress in ("on_the_way", "working", "completed", "completed"):
+            response = self.client.put(path + "/technician-progress", json={"progress": progress})
+            self.assertEqual(response.json["technician_progress"], progress)
+        self.assertEqual(self.client.put(path + "/technician-progress", json={"progress": []}).status_code, 400)
+        self.assertEqual(self.client.put("/api/tickets/999/technician-progress",
+                                        json={"progress": "working"}).status_code, 404)
+        updated = self.client.get("/api/tickets").json[0]
+        self.assertEqual((updated["status"], updated["agent"], updated["technician_progress"]),
+                         ("Assigned", "Bakı", "completed"))
+        events = self.client.get(path + "/events").json
+        self.assertEqual([e["detail"] for e in events if e["kind"] == "technician_progress"],
+                         ["completed", "working", "on_the_way"])
 
     def test_rejects_untrusted_or_invalid_input(self):
         self.assertEqual(self.client.post("/webhooks/telegram", json={}).status_code, 401)
