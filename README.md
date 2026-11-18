@@ -33,12 +33,12 @@ $payload = @{ id = "demo-1"; text = "Bakıda internet problemi" } | ConvertTo-Js
 Invoke-RestMethod http://127.0.0.1:8000/webhooks/whatsapp -Method Post -ContentType 'application/json; charset=utf-8' -Headers @{ 'X-Webhook-Secret' = 'local-demo' } -Body $payload
 ```
 
-The board refreshes every two seconds. Drag a card or use its status selector to move it. Location rules take precedence over service keywords. The current routing labels are demo assignments.
+The board refreshes every two seconds. Drag a card or use its status selector to move it. The built-in rules put location keywords before service keywords; custom rules use their configured order. The current routing labels are demo assignments.
 
 - Telegram accepts text updates at `POST /webhooks/telegram`. Register the public HTTPS webhook URL with Telegram using the same secret token as `TELEGRAM_SECRET`.
 - WhatsApp and email endpoints accept normalized JSON with `id` and `text`, authenticated by the `X-Webhook-Secret` header. A provider adapter must validate its provider's requests and forward this format.
 - `GET /api/tickets` lists tickets, `POST /api/tickets` creates a manual ticket, and `PATCH /api/tickets/<id>` changes its status. See Operator access below for authentication.
-- CI runs the test suite and builds and starts the Docker image. For a persistent container, mount a writable volume at `/data`. Public hosting, individual operator accounts, and direct provider adapters remain future work.
+- CI runs the test suite and builds and starts the Docker image. For a persistent container, mount a writable volume at `/data`. The Flask application is deployed on Railway. Individual operator accounts and direct WhatsApp/email provider adapters remain future work.
 
 ## Live Telegram demo
 
@@ -87,9 +87,12 @@ Use `DATABASE_PATH` to point at a persistent SQLite file or an isolated demo dat
 | PATCH | `/api/tickets/<id>` | Update `status` |
 | PUT | `/api/tickets/<id>/assignment` | Set `agent`, or clear with an empty string |
 | PUT | `/api/tickets/<id>/priority` | Set `priority` to `normal`, `high`, or `urgent` |
+| PUT | `/api/tickets/<id>/technician-progress` | Set `progress` to `not_assigned`, `on_the_way`, `working`, or `completed` |
+| GET, POST | `/api/tickets/<id>/conversation` | Read customer-visible messages, photos and rating, or queue an operator reply with `text` |
+| GET | `/api/tickets/<id>/photos/<photo_id>` | Download a ticket photo through the protected operator API |
 | GET | `/api/tickets/<id>/events` | Read activity and notes |
 | POST | `/api/tickets/<id>/notes` | Add an internal note with `text` |
-| POST | `/webhooks/telegram` | Telegram text intake using `TELEGRAM_SECRET` |
+| POST | `/webhooks/telegram` | Telegram private menus, text and photo intake using `TELEGRAM_SECRET` |
 | POST | `/webhooks/whatsapp`, `/webhooks/email` | Normalized intake using `INBOUND_SECRET` |
 
 ### Docker
@@ -121,3 +124,31 @@ In the Telegram review screen, select **Xidmət ünvanı əlavə et**, enter a s
 Open **Sahə xidməti** on the ticket card to view the address, open it in Google Maps, and update **Texnikin iş mərhələsi**. The operator can change this independently of the ticket status and agent assignment. Progress changes appear under **Tarixçə**.
 
 Open cards show a demo waiting-time badge calculated from the stored receipt timestamp. Green is under 120 minutes, yellow is 120–240 minutes, and red is above 240 minutes. Cards missing a receipt timestamp show **Vaxt məlum deyil**. Configure the thresholds with `DEMO_AGE_YELLOW_MINUTES` and `DEMO_AGE_RED_MINUTES` before starting the server. These are demo indicators with no contractual SLA guarantee.
+
+## Railway HTTPS deployment
+
+The public application is available at https://holberton-portfolio-project-production.up.railway.app. The dashboard requires operator authentication. The `/health` endpoint reports database readiness. This endpoint does not verify Telegram delivery or the outbound worker.
+
+| Variable | Purpose |
+| --- | --- |
+| `TELEGRAM_SECRET` | Dedicated secret matching the `secret_token` used in Telegram webhook registration |
+| `TELEGRAM_BOT_TOKEN` | BotFather token used for outbound messages and photo retrieval |
+| `TELEGRAM_WEBHOOK_REPLIES=1` | Enable immediate confirmation for ordinary private text tickets |
+| `OPERATOR_PASSWORD` | Required operator password for the standard server entry point |
+| `OPERATOR_USERNAME` | Optional shared username, default `operator` |
+| `DATABASE_PATH` | Existing database file on the persistent Railway volume |
+| `INBOUND_SECRET` | Optional secret for the normalized WhatsApp/email endpoints |
+
+The exact Telegram endpoint is `POST https://holberton-portfolio-project-production.up.railway.app/webhooks/telegram`. Guided menu responses return Telegram methods in the webhook response. Ordinary text confirmations additionally require `TELEGRAM_WEBHOOK_REPLIES=1`.
+
+The repository Dockerfile starts only Waitress on `0.0.0.0:8000`. Configure the Railway domain target port accordingly when using that command. Status notifications, operator replies and rating prompts need a supervised `python demo.py --delivery-only` process alongside the web server in the same service/container, with the same database path. A second Railway service with the same path string has its own filesystem. The current repository does not include a process supervisor for this combined deployment.
+
+Mount persistent storage at the configured database directory. Preserve the existing database path when updating the deployment and verify volume permissions for the container user. The Dockerfile default is `/data/support.sqlite3`.
+
+At webhook cutover, stop any local long-polling process for the same bot. Register the HTTPS URL using Telegram's `setWebhook` method with the matching secret, `allowed_updates=["message"]`, and `drop_pending_updates=false`. Enter secrets through private prompts or environment variables. Keep them out of committed files, browser URLs, shared logs and screenshots.
+
+After registration, inspect `getWebhookInfo`, submit both a guided and ordinary text ticket, and verify their confirmations on Telegram and their appearance on the Railway dashboard. Then change a status, send an operator reply, submit a customer reply and photo, and resolve and rate the ticket. Pending outgoing messages require checking the delivery process and its database path.
+
+The Railway bot cutover and outbound worker configuration must be verified on the actual deployment. Successful local Telegram tests do not establish production webhook delivery.
+
+Reference documentation: [Telegram webhooks](https://core.telegram.org/bots/api#setwebhook), [Railway volumes](https://docs.railway.com/volumes), [Railway start commands](https://docs.railway.com/deployments/start-command).
